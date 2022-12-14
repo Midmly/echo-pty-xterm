@@ -1,0 +1,213 @@
+<template>
+  <page-layout>
+    <template slot="headerContent">
+      <a-button style="border-radius: 0.6rem;margin-right: 0.6rem;" type="primary" @click="openCli">WEB Shell</a-button>
+      <a-button style="border-radius: 0.6rem;" type="primary" @click="close">Close Shell</a-button>
+    </template>
+    <div id="xterm" class="xterm-box"></div>
+  </page-layout>
+</template>
+
+<script>
+import { Terminal } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import 'xterm/css/xterm.css'
+import 'xterm/lib/xterm.js'
+import Cookie from "js-cookie";
+import PageLayout from "@/layouts/PageLayout";
+
+export default {
+  name: "webtty",
+  components: {PageLayout},
+  data() {
+    return {
+      term: null,
+      socket: '',
+      WebSocketUrl: 'ws://192.168.100.224/system/ws',
+      //WebSocketUrl: 'ws:192.168.5.10:8080/terminal/17317181717', //ws接口ws:192.168.5.10:8080/terminal/17317181717
+      // 心跳
+      lockReconnect: false, //是否真正建立连接
+      timeout: 60 * 1000, //60秒一次心跳
+      timeoutObj: null, //心跳心跳倒计时
+      serverTimeoutObj: null, //心跳倒计时
+      timeoutnum: null, //断开 重连倒计时
+    }
+  },
+  mounted() {
+    this.initUrl()
+    this.$nextTick(function (){
+      // this.init(this.WebSocketUrl)
+    })
+    // this.init(this.WebSocketUrl)
+  },
+  //跑路前清除定时器
+  beforeDestroy() {
+    if (this.socket){
+      this.socket.close()
+    }
+    if (this.term){
+      this.term.dispose()
+    }
+    clearTimeout(this.timeoutObj)
+    clearTimeout(this.serverTimeoutObj)
+    clearTimeout(this.timeoutnum)
+  },
+  methods: {
+    openCli(){
+      this.init(this.WebSocketUrl)
+    },
+    // 心跳函数--------------
+    reconnect() {
+      //重新连接
+      var that = this
+      if (that.lockReconnect) {
+        return
+      }
+      that.lockReconnect = true
+      //没连接上会一直重连，设置延迟避免请求过多
+      that.timeoutnum && clearTimeout(that.timeoutnum)
+      that.timeoutnum = setTimeout(function () {
+        //新连接
+        that.init(that.WebSocketUrl)
+        that.lockReconnect = false
+      }, 2000)
+    },
+    reset() {
+      //重置心跳
+      var that = this
+      //清除时间
+      clearTimeout(that.timeoutObj)
+      clearTimeout(that.serverTimeoutObj)
+      //重启心跳
+      that.start()
+    },
+    start() {
+      //开启心跳
+      const self = this;
+      self.timeoutObj && clearTimeout(self.timeoutObj)
+      self.serverTimeoutObj && clearTimeout(self.serverTimeoutObj)
+      self.timeoutObj = setTimeout(function () {
+        //这里发送一个心跳，后端收到后，返回一个心跳消息，
+        if (self.socket.readyState === 1) {
+          //如果连接正常,有事没事发ping,具体根据要求
+          //self.socket.send('ping')
+        } else {
+          //否则重连
+          self.reconnect()
+        }
+        self.serverTimeoutObj = setTimeout(function () {
+          //超时关闭
+          self.close()
+        }, self.timeout)
+      }, self.timeout)
+    },
+    //-----------------
+    initXterm() {
+      if (this.term) {
+        this.term.dispose()
+      }
+      this.term = new Terminal({
+        rendererType: 'canvas', //渲染类型
+        rows: 35, //行数 18是字体高度,根据需要自己修改
+        convertEol: true, //启用时，光标将设置为下一行的开头
+        scrollback: 800, //终端中的回滚量
+        disableStdin: false, //是否应禁用输入
+        cursorStyle: 'underline', //光标样式
+        cursorBlink: true, //光标闪烁
+        tabStopWidth: 8, //制表宽度
+        screenKeys: true,
+        theme: {
+          foreground: 'yellow', //字体
+          background: '#000000', //背景色
+          cursor: 'help', //设置光标
+        },
+      })
+      // this.term.writeln('Welcome to use Superman. ')
+      this.term.open(document.getElementById('xterm'))
+      const fitAddon = new FitAddon()
+      this.term.loadAddon(fitAddon)
+      fitAddon.fit() //全屏
+      // window.addEventListener('resize', this.resizeScreen)
+      // 支持输入与粘贴方法
+      const _this = this //一定要重新定义一个this，不然this指向会出问题
+      this.term.onData(function (data) {
+        _this.socket.onsend(data)
+      })
+    },
+    initUrl(){
+      const httpsEnabled = window.location.protocol === "https:";
+      const token = Cookie.get("Authorization")
+      let hex_t = Buffer.from(token).toString('hex')
+      // console.log(hex_t)
+      // this.WebSocketUrl = (httpsEnabled ? 'wss://' : 'ws://') + '192.168.100.131/system/ws/'+hex_t;
+      this.WebSocketUrl = (httpsEnabled ? 'wss://' : 'ws://') + window.location.host + '/system/ws/'+hex_t;
+    },
+    init(url) {
+      // 实例化socket
+      this.socket = new WebSocket(url)
+      // 监听socket连接
+      this.socket.onopen = this.open
+      // 监听socket错误信息
+      this.socket.onerror = this.error
+      // 监听socket消息
+      this.socket.onmessage = this.getMessage
+      // 发送socket消息
+      this.socket.onsend = this.send
+      let _this = this
+      this.socket.onclose = function() {
+        // console.log(evt)
+        _this.term.dispose()
+      }
+    },
+    open: function () {
+      // console.log('socket连接成功')
+      this.initXterm()
+      this.start()
+    },
+    error: function () {
+      // console.log('连接错误')
+      //重连
+      this.reconnect()
+    },
+    close: function () {
+      if (this.socket){
+        this.socket.close()
+      }
+      //重连
+      // this.reconnect()
+    },
+    getMessage: function (msg) {
+      const reader = new FileReader();
+      reader.readAsText(msg?.data, "UTF-8");
+      let _this = this
+      reader.onload = () => {
+        _this.term.write(reader.result)
+      }
+      // this.term.write(msg?.data)
+      this.reset()
+    },
+    send: function (data) {
+      this.socket.send(new TextEncoder().encode("\x00" + data))
+    },
+    resizeScreen(size) {
+      console.log(size)
+      var fitAddon = new FitAddon()
+      this.term.loadAddon(fitAddon)
+      try {
+        fitAddon.fit()
+        // 窗口大小改变时触发xterm的resize方法，向后端发送行列数，格式由后端决定
+        this.term.onResize((size) => {
+          console.log(size)
+          // this.onSend({ Op: 'resize', Cols: size.cols, Rows: size.rows })
+        })
+      } catch (e) {
+        console.log('e', e.message)
+      }
+    },
+  }
+}
+</script>
+
+<style scoped>
+
+</style>
